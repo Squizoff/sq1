@@ -1,3 +1,4 @@
+#define SDL_MAIN_HANDLED
 #include "pch.h"
 
 static int load_map(const std::string& filename) {

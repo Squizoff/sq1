@@ -9,7 +9,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     add_compile_options(-Wall -Wextra -O3 -DNDEBUG)
 endif()
 
-find_package(SDL2 REQUIRED)
+find_package(SDL2 CONFIG REQUIRED)
 include_directories(${SDL2_INCLUDE_DIRS})
 
 file(GLOB_RECURSE SRC
@@ -23,6 +23,9 @@ file(GLOB_RECURSE HEADERS
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 
 add_executable(${PROJECT_NAME} ${SRC} ${HEADERS})
-target_link_libraries(${PROJECT_NAME} ${SDL2_LIBRARIES})
+target_link_libraries(${PROJECT_NAME}
+    SDL2::SDL2
+    SDL2::SDL2main
+)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
