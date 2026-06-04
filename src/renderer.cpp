@@ -61,12 +61,42 @@ static int is_visible(float targetX, float targetY)
     float deltaY = targetY - state.pos.y;
     float distSq = deltaX * deltaX + deltaY * deltaY;
 
-    const float maxViewDistSq = 15.0f * 15.0f;
+    const float maxViewDistSq = 20.0f * 20.0f;
     if (distSq > maxViewDistSq)
         return 0;
 
-    float invDist = 1.0f / sqrtf(distSq);
-    return trace(state.pos.x, state.pos.y, deltaX * invDist, deltaY * invDist, sqrtf(distSq));
+    float dist = sqrtf(distSq);
+    if (dist < 0.1f) return 1;
+
+    float invDist = 1.0f / dist;
+
+    const float offset = 0.35f;
+
+    int visible = 0;
+
+    // center
+    if (trace(state.pos.x, state.pos.y, deltaX * invDist, deltaY * invDist, dist))
+        visible++;
+
+    // left side
+    float leftX = deltaX - deltaY * offset;
+    float leftY = deltaY + deltaX * offset;
+    float leftLen = sqrtf(leftX * leftX + leftY * leftY);
+    if (leftLen > 0.01f) {
+        if (trace(state.pos.x, state.pos.y, leftX / leftLen, leftY / leftLen, dist))
+            visible++;
+    }
+
+    // right side
+    float rightX = deltaX + deltaY * offset;
+    float rightY = deltaY - deltaX * offset;
+    float rightLen = sqrtf(rightX * rightX + rightY * rightY);
+    if (rightLen > 0.01f) {
+        if (trace(state.pos.x, state.pos.y, rightX / rightLen, rightY / rightLen, dist))
+            visible++;
+    }
+
+    return visible >= 1;
 }
 
 static void update_dynamic_lights(float deltaTime)
@@ -205,83 +235,96 @@ static void onerender()
     SDL_RenderPresent(state.renderer);
 }
 
-static void render_entities()
+static void render_entities(const float* zbuffer)
 {
+    struct Sprite {
+        float distSq;
+        float spriteX;
+        float spriteY;
+        int mapX, mapY;
+    };
+
+    std::vector<Sprite> sprites;
+
     for (int i = 0; i < MAP_SIZE * MAP_SIZE; i++) {
         if (MAPDATA[i] == 2) {
             int mapX = i % MAP_SIZE;
             int mapY = i / MAP_SIZE;
 
+            if (!is_visible(mapX + 0.5f, mapY + 0.5f))
+                continue;
+
             float spriteX = mapX + 0.5f - state.pos.x;
             float spriteY = mapY + 0.5f - state.pos.y;
+            float distSq = spriteX * spriteX + spriteY * spriteY;
 
-            if (!is_visible(mapX, mapY)) {
+            sprites.push_back({ distSq, spriteX, spriteY, mapX, mapY });
+        }
+    }
+
+    std::sort(sprites.begin(), sprites.end(), [](const Sprite& a, const Sprite& b) {
+        return a.distSq > b.distSq;
+        });
+
+    for (const auto& spr : sprites) {
+        float spriteX = spr.spriteX;
+        float spriteY = spr.spriteY;
+
+        float invDet = 1.0f / (state.plane.x * state.dir.y - state.dir.x * state.plane.y);
+        float transformX = invDet * (state.dir.y * spriteX - state.dir.x * spriteY);
+        float transformY = invDet * (-state.plane.y * spriteX + state.plane.x * spriteY);
+
+        if (transformY <= 0.0f) continue;
+
+        int spriteScreenX = (int)((SCREEN_WIDTH / 2.0f) * (1.0f + transformX / transformY));
+        int spriteHeight = abs((int)(SCREEN_HEIGHT / transformY));
+        int spriteWidth = abs((int)(SCREEN_HEIGHT / transformY));
+
+        int drawStartY = -spriteHeight / 2 + SCREEN_HEIGHT / 2 + state.pitch;
+        int drawEndY = spriteHeight / 2 + SCREEN_HEIGHT / 2 + state.pitch;
+        drawStartY = std::max(drawStartY, 0);
+        drawEndY = std::min(drawEndY, SCREEN_HEIGHT - 1);
+
+        int drawStartX = -spriteWidth / 2 + spriteScreenX;
+        int drawEndX = spriteWidth / 2 + spriteScreenX;
+        drawStartX = std::max(drawStartX, 0);
+        drawEndX = std::min(drawEndX, SCREEN_WIDTH - 1);
+
+        int texWidth = state.tex_width[2];
+        int texHeight = state.tex_height[2];
+
+        for (int x = drawStartX; x < drawEndX; x++) {
+            if (x < 0 || x >= SCREEN_WIDTH) continue;
+
+            if (transformY > zbuffer[x] * 1.05f)
                 continue;
-            }
 
-            float invDet = 1.0f / (state.plane.x * state.dir.y - state.dir.x * state.plane.y);
-            float transformX = invDet * (state.dir.y * spriteX - state.dir.x * spriteY);
-            float transformY = invDet * (-state.plane.y * spriteX + state.plane.x * spriteY);
+            int texX = (int)((x - (-spriteWidth / 2.0f + spriteScreenX)) * texWidth / spriteWidth);
+            texX = std::clamp(texX, 0, texWidth - 1);
 
-            if (transformY <= 0)
-                continue;
+            for (int y = drawStartY; y < drawEndY; y++) {
+                float realSpriteHeight = SCREEN_HEIGHT / transformY;
+                float texPos = ((y - SCREEN_HEIGHT / 2.0f) + (realSpriteHeight / 2.0f) - state.pitch)
+                    * texHeight / realSpriteHeight;
+                int texY = std::clamp((int)texPos, 0, texHeight - 1);
 
-            int spriteScreenX = (int)(((float)SCREEN_WIDTH / 2) * (1 + transformX / transformY));
-            int spriteHeight = abs((int)((float)SCREEN_HEIGHT / transformY));
-            int drawStartY = -((float)spriteHeight / 2) + ((float)SCREEN_HEIGHT / 2) + state.pitch;
-            drawStartY = std::max(drawStartY, 0);
-            int drawEndY = ((float)spriteHeight / 2) + ((float)SCREEN_HEIGHT / 2) + state.pitch;
-            drawEndY = std::min(drawEndY, SCREEN_HEIGHT - 1);
+                RGBA color = get_texture_pixel(2, texX, texY);
+                if (color.a == 0) continue;
 
-            int spriteWidth = abs((int)(SCREEN_HEIGHT / transformY));
-            int drawStartX = -spriteWidth / 2 + spriteScreenX;
-            drawStartX = std::max(drawStartX, 0);
-            int drawEndX = spriteWidth / 2 + spriteScreenX;
-            drawEndX = std::min(drawEndX, SCREEN_WIDTH - 1);
+                color = apply_fog(color, transformY);
+                color = apply_tonemap(color);
 
-            int texWidth = state.tex_width[2];
-            int texHeight = state.tex_height[2];
+                uint32_t bgColor = state.pixels[y * SCREEN_WIDTH + x];
+                uint8_t bgR = (bgColor >> 16) & 0xFF;
+                uint8_t bgG = (bgColor >> 8) & 0xFF;
+                uint8_t bgB = bgColor & 0xFF;
 
-            for (int x = drawStartX; x < drawEndX; x++) {
-                int texX = (int)((x - ((float)-spriteWidth / 2 + spriteScreenX)) * texWidth / (float)spriteWidth);
-                if (texX < 0)
-                    texX = 0;
-                if (texX >= texWidth)
-                    texX = texWidth - 1;
+                float alpha = color.a / 255.0f;
+                uint8_t outR = (uint8_t)(color.r * alpha + bgR * (1.0f - alpha));
+                uint8_t outG = (uint8_t)(color.g * alpha + bgG * (1.0f - alpha));
+                uint8_t outB = (uint8_t)(color.b * alpha + bgB * (1.0f - alpha));
 
-                for (int y = drawStartY; y < drawEndY; y++) {
-                    float realSpriteHeight = SCREEN_HEIGHT / transformY;
-                    float texPos = ((y - SCREEN_HEIGHT / 2.0f) + (realSpriteHeight / 2.0f) - state.pitch) * texHeight / realSpriteHeight;
-                    int texY = (int)texPos;
-                    if (texY < 0)
-                        texY = 0;
-                    if (texY >= texHeight)
-                        texY = texHeight - 1;
-
-                    float spriteDist = transformY;
-                    if (spriteDist < 0.05f) {
-                        continue;
-                    }
-
-                    RGBA color = get_texture_pixel(2, texX, texY);
-                    color = apply_fog(color, spriteDist);
-                    color = apply_tonemap(color);
-
-                    if (color.a > 0) {
-                        uint32_t bgColor = state.pixels[y * SCREEN_WIDTH + x];
-                        uint8_t bgR = bgColor & 0xFF;
-                        uint8_t bgG = (bgColor >> 8) & 0xFF;
-                        uint8_t bgB = (bgColor >> 16) & 0xFF;
-
-                        float alpha = color.a / 255.0f;
-
-                        uint8_t outR = (uint8_t)(color.r * alpha + bgR * (1.0f - alpha));
-                        uint8_t outG = (uint8_t)(color.g * alpha + bgG * (1.0f - alpha));
-                        uint8_t outB = (uint8_t)(color.b * alpha + bgB * (1.0f - alpha));
-
-                        state.pixels[y * SCREEN_WIDTH + x] = (outB << 16) | (outG << 8) | outR;
-                    }
-                }
+                state.pixels[y * SCREEN_WIDTH + x] = (outB << 16) | (outG << 8) | outR;
             }
         }
     }
@@ -380,6 +423,8 @@ static void render_other()
 
 static void render_walls()
 {
+    std::vector<float> zbuffer(SCREEN_WIDTH, 9999.0f);
+
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
         int cameraX_fixed = ((2 * x) << 16) / SCREEN_WIDTH - (1 << 16);
 
@@ -424,8 +469,10 @@ static void render_walls()
                 hit = 1;
         }
 
-        if (!hit)
+        if (!hit) {
+            zbuffer[x] = 9999.0f; // so far
             continue;
+        }
 
         float perpWallDist = (side == 0)
             ? (sideDistX - deltaDistX)
@@ -433,6 +480,8 @@ static void render_walls()
 
         if (perpWallDist <= 0.01f)
             perpWallDist = 0.01f;
+
+        zbuffer[x] = perpWallDist;
 
         int lineHeight = (int)(SCREEN_HEIGHT / perpWallDist);
         int drawStart = (SCREEN_HEIGHT >> 1) - (lineHeight >> 1) + state.pitch;
@@ -478,6 +527,7 @@ static void render_walls()
             state.pixels[y * SCREEN_WIDTH + x] = (color.b << 16) | (color.g << 8) | color.r;
         }
     }
+    render_entities(zbuffer.data());
 }
 
 static void render_weapon()
@@ -632,7 +682,6 @@ void render(float deltaTime)
 
     render_other();
     render_walls();
-    render_entities();
     render_bullet_trail();
     render_weapon();
 
