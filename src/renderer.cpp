@@ -415,8 +415,6 @@ static void render_other(std::vector<float>& depthBuffer)
 
 static void render_walls(std::vector<float>& depthBuffer)
 {
-    zbuffer.resize(SCREEN_WIDTH);
-
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
         float cameraX = 2.0f * x / SCREEN_WIDTH - 1.0f;
 
@@ -722,6 +720,7 @@ void render_loop(float deltaTime)
     // memset(state.pixels, 0, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint32_t));
 
     std::fill(depthBuffer.begin(), depthBuffer.end(), FLT_MAX);
+    std::fill(zbuffer.begin(), zbuffer.end(), FLT_MAX);
 
     update_dynamic_lights(deltaTime);
 
@@ -737,6 +736,7 @@ void render_loop(float deltaTime)
 
 void render_init() {
     std::fill(zbuffer.begin(), zbuffer.end(), FLT_MAX);
+    zbuffer.resize(SCREEN_WIDTH);
     depthBuffer.resize(SCREEN_WIDTH * SCREEN_HEIGHT);
     spriteBuffer.reserve(256);
 }
