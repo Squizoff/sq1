@@ -14,10 +14,12 @@ void rotate(float rotX, float rotY) {
 int check_collision(float x, float y) {
     int mapX = (int)x;
     int mapY = (int)y;
-    if (mapX < 0 || mapX >= MAP_SIZE || mapY < 0 || mapY >= MAP_SIZE) return 1;
 
-    int tile = MAPDATA[mapY * MAP_SIZE + mapX];
-    return tile != 0 && tile != 2 && tile != 3;
+    if (mapX < 0 || mapX >= MAP_SIZE || mapY < 0 || mapY >= MAP_SIZE)
+        return 1;
+
+    const Cell& cell = MAPDATA[mapY * MAP_SIZE + mapX];
+    return cell.type == 1;
 }
 
 void cast_ray() {
@@ -52,12 +54,12 @@ void cast_ray() {
 
         int index = (int)mapPos.y * MAP_SIZE + (int)mapPos.x;
 
-        if (MAPDATA[index] != 0) {
-            if (MAPDATA[index] == 1) {
+        if (MAPDATA[index].type != 0) {
+            if (MAPDATA[index].type == 1) {
                 printf("Hit a wall at (%d, %d, %d)\n", (int)mapPos.x, (int)mapPos.y, (int)mapPos.z);
             }
-            else if (MAPDATA[index] == 2) {
-                MAPDATA[index] = 0;
+            else if (MAPDATA[index].type == 2) {
+                MAPDATA[index].type = 0;
                 printf("Object destroyed at (%d, %d, %d)\n", (int)mapPos.x, (int)mapPos.y, (int)mapPos.z);
             }
             break;
@@ -65,9 +67,70 @@ void cast_ray() {
     }
 }
 
-void update_player(const uint8_t* keystate) {
+static inline void snap_to_floor()
+{
+    int x = (int)state.pos.x;
+    int y = (int)state.pos.y;
+
+    if (x < 0 || x >= MAP_SIZE || y < 0 || y >= MAP_SIZE)
+        return;
+
+    const Cell& c = MAPDATA[y * MAP_SIZE + x];
+    state.pos.z = c.floorZ;
+}
+
+static inline bool in_bounds(int x, int y)
+{
+    return x >= 0 && x < MAP_SIZE && y >= 0 && y < MAP_SIZE;
+}
+
+static inline const Cell& cell_at(int x, int y)
+{
+    return MAPDATA[y * MAP_SIZE + x];
+}
+
+static bool is_blocked(int x, int y)
+{
+    if (!in_bounds(x, y))
+        return true;
+
+    const Cell& c = cell_at(x, y);
+
+    if (c.floorZ < c.ceilZ)
+        return true;
+
+    return false;
+}
+
+static bool can_stand_in_cell(int x, int y)
+{
+    if (!in_bounds(x, y))
+        return false;
+
+    const Cell& c = cell_at(x, y);
+
+    return (c.ceilZ - c.floorZ) >= PLAYER_HEIGHT;
+}
+
+static bool can_move_to(float x, float y)
+{
+    float left = x - PLAYER_HALF_SIZE;
+    float right = x + PLAYER_HALF_SIZE;
+    float top = y - PLAYER_HALF_SIZE;
+    float bottom = y + PLAYER_HALF_SIZE;
+
+    return
+        !can_stand_in_cell((int)floorf(left), (int)floorf(top)) &&
+        !can_stand_in_cell((int)floorf(right), (int)floorf(top)) &&
+        !can_stand_in_cell((int)floorf(left), (int)floorf(bottom)) &&
+        !can_stand_in_cell((int)floorf(right), (int)floorf(bottom));
+}
+
+void update_player(const uint8_t* keystate)
+{
     state.velocity.x = MOVE_SPEED * state.deltaTime;
     state.velocity.y = MOVE_SPEED * state.deltaTime;
+
     if (keystate[SDL_SCANCODE_LSHIFT]) {
         state.velocity.x *= 1.5f;
         state.velocity.y *= 1.5f;
@@ -86,24 +149,25 @@ void update_player(const uint8_t* keystate) {
     }
 
     if (keystate[SDL_SCANCODE_A]) {
-        float sideDirX = -state.dir.y;
-        float sideDirY = state.dir.x;
-        newX += sideDirX * state.velocity.x;
-        newY += sideDirY * state.velocity.y;
+        newX += -state.dir.y * state.velocity.x;
+        newY += state.dir.x * state.velocity.y;
     }
     if (keystate[SDL_SCANCODE_D]) {
-        float sideDirX = state.dir.y;
-        float sideDirY = -state.dir.x;
-        newX += sideDirX * state.velocity.x;
-        newY += sideDirY * state.velocity.y;
+        newX += state.dir.y * state.velocity.x;
+        newY += -state.dir.x * state.velocity.y;
     }
 
-    if (!check_collision(newX, state.pos.y)) {
+    if (can_move_to(newX, state.pos.y))
+    {
         state.pos.x = newX;
     }
-    if (!check_collision(state.pos.x, newY)) {
+
+    if (can_move_to(state.pos.x, newY))
+    {
         state.pos.y = newY;
     }
+
+    snap_to_floor();
 
     int mouseX, mouseY;
     Uint32 mouseState = SDL_GetMouseState(&mouseX, &mouseY);

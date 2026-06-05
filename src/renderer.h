@@ -1,6 +1,7 @@
 #ifndef RENDERER_H
 #define RENDERER_H
 
-void render(float deltaTime);
+void render_loop(float deltaTime);
+void render_init();
 
 #endif

@@ -12,33 +12,60 @@ static int load_map(const std::string& filename) {
     std::string line;
 
     while (std::getline(file, line)) {
-        lines.push_back(line);
+        if (!line.empty())
+            lines.push_back(line);
     }
 
-    int mapSize = lines.size();
+    int mapSize = (int)lines.size();
+    if (mapSize <= 0) return 0;
+
     delete[] MAPDATA;
     MAP_SIZE = mapSize;
-    MAPDATA = new uint8_t[MAP_SIZE * MAP_SIZE];
+    MAPDATA = new Cell[MAP_SIZE * MAP_SIZE]();
 
     int spawnFound = 0;
 
     for (int y = 0; y < mapSize; y++) {
         for (int x = 0; x < mapSize; x++) {
-            if (lines[y][x] == '1') {
-                MAPDATA[y * MAP_SIZE + x] = 1;
-            }
-            else if (lines[y][x] == '2') {
-                MAPDATA[y * MAP_SIZE + x] = 2;
-            }
-            else if (lines[y][x] == '3') {
-                MAPDATA[y * MAP_SIZE + x] = 3;
+            char c = (x < (int)lines[y].size()) ? lines[y][x] : '0';
+            Cell& cell = MAPDATA[y * MAP_SIZE + x];
+
+            switch (c) {
+            case '1':
+                cell.type = 1;
+                cell.floorZ = 0.0f;
+                cell.ceilZ = 2.0f;
+                break;
+
+            case '2':
+                cell.type = 2;
+                break;
+
+            case '3':
+                cell.type = 3;
                 if (!spawnFound) {
-                    state.pos = { static_cast<float>(x), static_cast<float>(y), 0 };
+                    state.pos = { (float)x + 0.5f, (float)y + 0.5f, 0.0f };
                     spawnFound = 1;
                 }
-            }
-            else {
-                MAPDATA[y * MAP_SIZE + x] = 0;
+                break;
+
+            case '4':
+                cell.type = 1;
+                cell.floorZ = 0.0f;
+                cell.ceilZ = 2.0f;
+                break;
+
+            case '5':
+                cell.type = 1;
+                cell.floorZ = 0.3f;
+                cell.ceilZ = 0.3f;
+                break;
+
+            default:
+                cell.type = 0;
+                cell.floorZ = 0.0f;
+                cell.ceilZ = 0.0f;
+                break;
             }
         }
     }
@@ -85,6 +112,8 @@ int main() {
         return 1;
     }
 
+    render_init();
+
     state.pos = { 0.0f, 0.0f, 0 };
     state.dir = { -1.0f, 0.0f, 0 };
     state.plane = { 0.0f, 0.66f, 0 };
@@ -126,7 +155,7 @@ int main() {
         add_dynamic_light(lightX, 8, 1.5f, { 255, 255, 255 }, 3.0f, CONSTANT);
 
         memset(state.pixels, 0, sizeof(state.pixels));
-        render(state.deltaTime);
+        render_loop(state.deltaTime);
 
         frameCount++;
         if (frameStart - lastFpsUpdate >= 300) {

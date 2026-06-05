@@ -21,14 +21,23 @@ constexpr int SCREEN_HEIGHT = static_cast<int>(720 * DESCALER);
 constexpr int SCREEN_WIDTH = 320;
 constexpr int SCREEN_HEIGHT = 200;
 #endif
+constexpr float PLAYER_HEIGHT = 0.75f;
+constexpr float PLAYER_HALF_SIZE = 0.05f;
+constexpr float STEP_HEIGHT = 0.35f;
 constexpr float MOVE_SPEED = 5.0f;
 constexpr float ROT_SPEED = 0.1f;
 constexpr float PITCH_SPEED = 0.3f;
 constexpr int MAX_PITCH = 90;
 constexpr int count_t = 6;
 
+struct Cell {
+    uint8_t type = 0;
+    float floorZ = 0.0f;
+    float ceilZ = 0.0f;
+};
+
 extern int MAP_SIZE;
-extern uint8_t* MAPDATA;
+extern Cell* MAPDATA;
 
 extern std::vector<v3> bulletTrail;
 

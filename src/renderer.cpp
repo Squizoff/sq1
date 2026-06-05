@@ -3,6 +3,27 @@
 RGBA skyColor = { 255, 255, 255, 255 };
 #define FOG_DENSITY 0.2f
 
+struct Sprite {
+    float distSq;
+    float spriteX;
+    float spriteY;
+    int mapX, mapY;
+    float floorZ;
+};
+
+struct WallHit {
+    float dist;
+    int mapX;
+    int mapY;
+    int side;
+    float rayDirX;
+    float rayDirY;
+};
+
+static std::vector<float> depthBuffer;
+static std::vector<Sprite> spriteBuffer;
+static std::vector<float> zbuffer;
+
 static RGBA apply_fog(RGBA color, float distance)
 {
 #if 1
@@ -12,91 +33,6 @@ static RGBA apply_fog(RGBA color, float distance)
     color.b = static_cast<uint8_t>(color.b * (1 - fog_factor));
 #endif
     return color;
-}
-
-static int trace(float startX, float startY, float dirX, float dirY, float maxDist)
-{
-    v3 mapPos = {
-        static_cast<float>((int)startX),
-        static_cast<float>((int)startY),
-        0.0f
-    };
-
-    v3 deltaDist = { fabsf(1.0f / dirX), fabsf(1.0f / dirY), 0 };
-    v3 step = {
-        static_cast<float>((dirX < 0) ? -1 : 1),
-        static_cast<float>((dirY < 0) ? -1 : 1),
-        0.0f
-    };
-
-    v3 sideDist = {
-        (dirX < 0) ? (startX - mapPos.x) * deltaDist.x
-                   : (mapPos.x + 1 - startX) * deltaDist.x,
-        (dirY < 0) ? (startY - mapPos.y) * deltaDist.y
-                   : (mapPos.y + 1 - startY) * deltaDist.y,
-        0
-    };
-
-    while (maxDist > 0) {
-        if (sideDist.x < sideDist.y) {
-            sideDist.x += deltaDist.x;
-            mapPos.x += step.x;
-        } else {
-            sideDist.y += deltaDist.y;
-            mapPos.y += step.y;
-        }
-
-        if (MAPDATA[(int)mapPos.y * MAP_SIZE + (int)mapPos.x] == 1) {
-            return 0;
-        }
-        maxDist -= 1.0f;
-    }
-
-    return 1;
-}
-
-static int is_visible(float targetX, float targetY)
-{
-    float deltaX = targetX - state.pos.x;
-    float deltaY = targetY - state.pos.y;
-    float distSq = deltaX * deltaX + deltaY * deltaY;
-
-    const float maxViewDistSq = 20.0f * 20.0f;
-    if (distSq > maxViewDistSq)
-        return 0;
-
-    float dist = sqrtf(distSq);
-    if (dist < 0.1f) return 1;
-
-    float invDist = 1.0f / dist;
-
-    const float offset = 0.35f;
-
-    int visible = 0;
-
-    // center
-    if (trace(state.pos.x, state.pos.y, deltaX * invDist, deltaY * invDist, dist))
-        visible++;
-
-    // left side
-    float leftX = deltaX - deltaY * offset;
-    float leftY = deltaY + deltaX * offset;
-    float leftLen = sqrtf(leftX * leftX + leftY * leftY);
-    if (leftLen > 0.01f) {
-        if (trace(state.pos.x, state.pos.y, leftX / leftLen, leftY / leftLen, dist))
-            visible++;
-    }
-
-    // right side
-    float rightX = deltaX + deltaY * offset;
-    float rightY = deltaY - deltaX * offset;
-    float rightLen = sqrtf(rightX * rightX + rightY * rightY);
-    if (rightLen > 0.01f) {
-        if (trace(state.pos.x, state.pos.y, rightX / rightLen, rightY / rightLen, dist))
-            visible++;
-    }
-
-    return visible >= 1;
 }
 
 static void update_dynamic_lights(float deltaTime)
@@ -146,7 +82,7 @@ static RGBA apply_dynamic_lights(RGBA color, float pixelX, float pixelY)
 
 static RGBA apply_tonemap(RGBA color)
 {
-#if 1
+#if 0
     float influenceFactor = 1.0f * 0.5f;
     float brightness = (color.r + color.g + color.b) / 3.0f;
     float skyBrightness = (skyColor.r + skyColor.g + skyColor.b) / 3.0f;
@@ -235,38 +171,30 @@ static void onerender()
     SDL_RenderPresent(state.renderer);
 }
 
-static void render_entities(const float* zbuffer)
+static void render_entities(const std::vector<float>& depthBuffer)
 {
-    struct Sprite {
-        float distSq;
-        float spriteX;
-        float spriteY;
-        int mapX, mapY;
-    };
-
-    std::vector<Sprite> sprites;
+    spriteBuffer.clear();
 
     for (int i = 0; i < MAP_SIZE * MAP_SIZE; i++) {
-        if (MAPDATA[i] == 2) {
+        if (MAPDATA[i].type == 2) {
             int mapX = i % MAP_SIZE;
             int mapY = i / MAP_SIZE;
 
-            if (!is_visible(mapX + 0.5f, mapY + 0.5f))
-                continue;
+            const Cell& cell = MAPDATA[i];
 
             float spriteX = mapX + 0.5f - state.pos.x;
             float spriteY = mapY + 0.5f - state.pos.y;
             float distSq = spriteX * spriteX + spriteY * spriteY;
 
-            sprites.push_back({ distSq, spriteX, spriteY, mapX, mapY });
+            spriteBuffer.push_back({ distSq, spriteX, spriteY, mapX, mapY, cell.floorZ });
         }
     }
 
-    std::sort(sprites.begin(), sprites.end(), [](const Sprite& a, const Sprite& b) {
+    std::sort(spriteBuffer.begin(), spriteBuffer.end(), [](const Sprite& a, const Sprite& b) {
         return a.distSq > b.distSq;
         });
 
-    for (const auto& spr : sprites) {
+    for (const auto& spr : spriteBuffer) {
         float spriteX = spr.spriteX;
         float spriteY = spr.spriteY;
 
@@ -274,19 +202,37 @@ static void render_entities(const float* zbuffer)
         float transformX = invDet * (state.dir.y * spriteX - state.dir.x * spriteY);
         float transformY = invDet * (-state.plane.y * spriteX + state.plane.x * spriteY);
 
-        if (transformY <= 0.0f) continue;
+        if (transformY <= 0.0f)
+            continue;
 
         int spriteScreenX = (int)((SCREEN_WIDTH / 2.0f) * (1.0f + transformX / transformY));
-        int spriteHeight = abs((int)(SCREEN_HEIGHT / transformY));
-        int spriteWidth = abs((int)(SCREEN_HEIGHT / transformY));
 
-        int drawStartY = -spriteHeight / 2 + SCREEN_HEIGHT / 2 + state.pitch;
-        int drawEndY = spriteHeight / 2 + SCREEN_HEIGHT / 2 + state.pitch;
+        const float eyeZ = state.pos.z + 0.5f;
+        const float entityHeight = 1.0f;
+
+        float bottomScreenF = (SCREEN_HEIGHT / 2.0f)
+            - ((spr.floorZ - eyeZ) / transformY) * SCREEN_HEIGHT
+            + state.pitch;
+
+        float topScreenF = (SCREEN_HEIGHT / 2.0f)
+            - (((spr.floorZ + entityHeight) - eyeZ) / transformY) * SCREEN_HEIGHT
+            + state.pitch;
+
+        int drawStartY = (int)topScreenF;
+        int drawEndY = (int)bottomScreenF;
+
+        int spriteHeight = drawEndY - drawStartY;
+        if (spriteHeight <= 0)
+            continue;
+
+        int spriteWidth = spriteHeight;
+
         drawStartY = std::max(drawStartY, 0);
         drawEndY = std::min(drawEndY, SCREEN_HEIGHT - 1);
 
         int drawStartX = -spriteWidth / 2 + spriteScreenX;
         int drawEndX = spriteWidth / 2 + spriteScreenX;
+
         drawStartX = std::max(drawStartX, 0);
         drawEndX = std::min(drawEndX, SCREEN_WIDTH - 1);
 
@@ -294,27 +240,29 @@ static void render_entities(const float* zbuffer)
         int texHeight = state.tex_height[2];
 
         for (int x = drawStartX; x < drawEndX; x++) {
-            if (x < 0 || x >= SCREEN_WIDTH) continue;
-
-            if (transformY > zbuffer[x] * 1.05f)
+            if (x < 0 || x >= SCREEN_WIDTH)
                 continue;
 
             int texX = (int)((x - (-spriteWidth / 2.0f + spriteScreenX)) * texWidth / spriteWidth);
             texX = std::clamp(texX, 0, texWidth - 1);
 
             for (int y = drawStartY; y < drawEndY; y++) {
-                float realSpriteHeight = SCREEN_HEIGHT / transformY;
-                float texPos = ((y - SCREEN_HEIGHT / 2.0f) + (realSpriteHeight / 2.0f) - state.pitch)
-                    * texHeight / realSpriteHeight;
-                int texY = std::clamp((int)texPos, 0, texHeight - 1);
+                int idx = y * SCREEN_WIDTH + x;
+
+                if (transformY > depthBuffer[idx] * 1.05f)
+                    continue;
+
+                float t = (y - topScreenF) / (bottomScreenF - topScreenF);
+                int texY = std::clamp((int)(t * texHeight), 0, texHeight - 1);
 
                 RGBA color = get_texture_pixel(2, texX, texY);
-                if (color.a == 0) continue;
+                if (color.a == 0)
+                    continue;
 
                 color = apply_fog(color, transformY);
                 color = apply_tonemap(color);
 
-                uint32_t bgColor = state.pixels[y * SCREEN_WIDTH + x];
+                uint32_t bgColor = state.pixels[idx];
                 uint8_t bgR = (bgColor >> 16) & 0xFF;
                 uint8_t bgG = (bgColor >> 8) & 0xFF;
                 uint8_t bgB = bgColor & 0xFF;
@@ -324,7 +272,7 @@ static void render_entities(const float* zbuffer)
                 uint8_t outG = (uint8_t)(color.g * alpha + bgG * (1.0f - alpha));
                 uint8_t outB = (uint8_t)(color.b * alpha + bgB * (1.0f - alpha));
 
-                state.pixels[y * SCREEN_WIDTH + x] = (outB << 16) | (outG << 8) | outR;
+                state.pixels[idx] = (outB << 16) | (outG << 8) | outR;
             }
         }
     }
@@ -363,47 +311,91 @@ static void render_sky(int skyHeight, float viewAngle)
     }
 }
 
-static void render_floor(int horizon)
+static void render_floor(int horizon, std::vector<float>& depthBuffer)
 {
-    for (int y = horizon; y < SCREEN_HEIGHT; y++) {
+    const int texWidth = state.tex_width[1];
+    const int texHeight = state.tex_height[1];
+    const float eyeZ = state.pos.z + 0.5f;
+
+    for (int y = horizon; y < SCREEN_HEIGHT; ++y) {
         int p = y - horizon;
-        if (p == 0)
-            p = 1;
+        if (p <= 0) p = 1;
 
-        float rowDist = (0.5f * SCREEN_HEIGHT) / p;
+        for (int x = 0; x < SCREEN_WIDTH; ++x) {
+            float cameraX = 2.0f * x / (float)SCREEN_WIDTH - 1.0f;
+            float rayDirX = state.dir.x + state.plane.x * cameraX;
+            float rayDirY = state.dir.y + state.plane.y * cameraX;
 
-        float floorX = state.pos.x + rowDist * (state.dir.x - state.plane.x);
-        float floorY = state.pos.y + rowDist * (state.dir.y - state.plane.y);
+            float floorZ = state.pos.z;
 
-        float floorStepX = 2.0f * rowDist * state.plane.x / SCREEN_WIDTH;
-        float floorStepY = 2.0f * rowDist * state.plane.y / SCREEN_WIDTH;
+            float worldX = state.pos.x;
+            float worldY = state.pos.y;
+            int cellX = -1, cellY = -1;
 
-        for (int x = 0; x < SCREEN_WIDTH; x++) {
-            int texWidth = state.tex_width[1];
-            int texHeight = state.tex_height[1];
+            for (int iter = 0; iter < 2; ++iter) {
+                float dist = (eyeZ - floorZ) * SCREEN_HEIGHT / (float)p;
+                if (dist <= 0.01f)
+                    break;
 
-            int texX = ((int)(floorX * texWidth)) % texWidth;
-            if (texX < 0)
-                texX += texWidth;
+                worldX = state.pos.x + rayDirX * dist;
+                worldY = state.pos.y + rayDirY * dist;
 
-            int texY = ((int)(floorY * texHeight)) % texHeight;
-            if (texY < 0)
-                texY += texHeight;
+                cellX = (int)floorf(worldX);
+                cellY = (int)floorf(worldY);
+
+                if (cellX < 0 || cellY < 0 || cellX >= MAP_SIZE || cellY >= MAP_SIZE)
+                    break;
+
+                floorZ = MAPDATA[cellY * MAP_SIZE + cellX].floorZ;
+            }
+
+            if (cellX < 0 || cellY < 0 || cellX >= MAP_SIZE || cellY >= MAP_SIZE)
+                continue;
+
+            const Cell& cell = MAPDATA[cellY * MAP_SIZE + cellX];
+            if (eyeZ <= cell.floorZ + 0.01f)
+                continue;
+
+            float dist = (eyeZ - cell.floorZ) * SCREEN_HEIGHT / (float)p;
+            if (dist <= 0.01f)
+                continue;
+
+            int idx = y * SCREEN_WIDTH + x;
+            depthBuffer[idx] = dist;
+
+            worldX = state.pos.x + rayDirX * dist;
+            worldY = state.pos.y + rayDirY * dist;
+
+            float fracX = worldX - floorf(worldX);
+            float fracY = worldY - floorf(worldY);
+
+            if (fracX < 0.0f) fracX += 1.0f;
+            if (fracY < 0.0f) fracY += 1.0f;
+
+            int texX = (int)(fracX * texWidth);
+            int texY = (int)(fracY * texHeight);
+
+            texX = std::clamp(texX, 0, texWidth - 1);
+            texY = std::clamp(texY, 0, texHeight - 1);
 
             RGBA color = get_texture_pixel(1, texX, texY);
+
+            float heightDelta = cell.floorZ - state.pos.z;
+            float shade = clamp(1.0f - fabsf(heightDelta) * 0.12f, 0.55f, 1.0f);
+            color.r = (uint8_t)(color.r * shade);
+            color.g = (uint8_t)(color.g * shade);
+            color.b = (uint8_t)(color.b * shade);
+
             color = apply_tonemap(color);
-            color = apply_fog(color, rowDist);
-            color = apply_dynamic_lights(color, floorX, floorY);
+            color = apply_fog(color, dist);
+            color = apply_dynamic_lights(color, worldX, worldY);
 
-            state.pixels[y * SCREEN_WIDTH + x] = (color.b << 16) | (color.g << 8) | color.r;
-
-            floorX += floorStepX;
-            floorY += floorStepY;
+            state.pixels[idx] = (color.b << 16) | (color.g << 8) | color.r;
         }
     }
 }
 
-static void render_other()
+static void render_other(std::vector<float>& depthBuffer)
 {
     const int baseSkyHeight = SCREEN_HEIGHT / 2;
     int horizon = baseSkyHeight + state.pitch;
@@ -418,44 +410,48 @@ static void render_other()
         viewAngle += 1.0f;
 
     render_sky(horizon, viewAngle);
-    render_floor(horizon);
+    render_floor(horizon, depthBuffer);
 }
 
-static void render_walls()
+static void render_walls(std::vector<float>& depthBuffer)
 {
-    std::vector<float> zbuffer(SCREEN_WIDTH, 9999.0f);
+    zbuffer.resize(SCREEN_WIDTH);
 
     for (int x = 0; x < SCREEN_WIDTH; ++x) {
-        int cameraX_fixed = ((2 * x) << 16) / SCREEN_WIDTH - (1 << 16);
+        float cameraX = 2.0f * x / SCREEN_WIDTH - 1.0f;
 
-        float rayDirX = state.dir.x + ((state.plane.x * cameraX_fixed) / 65536.0f);
-        float rayDirY = state.dir.y + ((state.plane.y * cameraX_fixed) / 65536.0f);
+        float rayDirX = state.dir.x + (state.plane.x * cameraX);
+        float rayDirY = state.dir.y + (state.plane.y * cameraX);
 
         int mapX = (int)state.pos.x;
         int mapY = (int)state.pos.y;
 
-        float deltaDistX = (rayDirX == 0) ? 1e30f : fabsf(1.0f / rayDirX);
-        float deltaDistY = (rayDirY == 0) ? 1e30f : fabsf(1.0f / rayDirY);
+        float deltaDistX = (rayDirX == 0.0f) ? 1e30f : fabsf(1.0f / rayDirX);
+        float deltaDistY = (rayDirY == 0.0f) ? 1e30f : fabsf(1.0f / rayDirY);
 
-        float sideDistX, sideDistY;
-        int stepX = (rayDirX < 0) ? -1 : 1;
-        int stepY = (rayDirY < 0) ? -1 : 1;
+        int stepX = (rayDirX < 0.0f) ? -1 : 1;
+        int stepY = (rayDirY < 0.0f) ? -1 : 1;
 
-        sideDistX = (rayDirX < 0)
+        float sideDistX = (rayDirX < 0.0f)
             ? (state.pos.x - mapX) * deltaDistX
             : (mapX + 1.0f - state.pos.x) * deltaDistX;
 
-        sideDistY = (rayDirY < 0)
+        float sideDistY = (rayDirY < 0.0f)
             ? (state.pos.y - mapY) * deltaDistY
             : (mapY + 1.0f - state.pos.y) * deltaDistY;
 
-        int hit = 0, side = 0;
-        while (!hit) {
+        std::vector<WallHit> columnHits;
+        columnHits.reserve(6);
+
+        while (true) {
+            int side = 0;
+
             if (sideDistX < sideDistY) {
                 sideDistX += deltaDistX;
                 mapX += stepX;
                 side = 0;
-            } else {
+            }
+            else {
                 sideDistY += deltaDistY;
                 mapY += stepY;
                 side = 1;
@@ -464,70 +460,107 @@ static void render_walls()
             if (mapX < 0 || mapX >= (int)MAP_SIZE || mapY < 0 || mapY >= (int)MAP_SIZE)
                 break;
 
-            int tile = MAPDATA[mapY * MAP_SIZE + mapX];
-            if (tile && tile != 3 && tile != 2)
-                hit = 1;
-        }
-
-        if (!hit) {
-            zbuffer[x] = 9999.0f; // so far
-            continue;
-        }
-
-        float perpWallDist = (side == 0)
-            ? (sideDistX - deltaDistX)
-            : (sideDistY - deltaDistY);
-
-        if (perpWallDist <= 0.01f)
-            perpWallDist = 0.01f;
-
-        zbuffer[x] = perpWallDist;
-
-        int lineHeight = (int)(SCREEN_HEIGHT / perpWallDist);
-        int drawStart = (SCREEN_HEIGHT >> 1) - (lineHeight >> 1) + state.pitch;
-        int drawEnd = drawStart + lineHeight;
-
-        if (drawStart < 0)
-            drawStart = 0;
-        if (drawEnd >= SCREEN_HEIGHT)
-            drawEnd = SCREEN_HEIGHT - 1;
-
-        float wallHit = (side == 0)
-            ? state.pos.y + perpWallDist * rayDirY
-            : state.pos.x + perpWallDist * rayDirX;
-        wallHit -= (int)wallHit;
-
-        int texId = MAPDATA[mapY * MAP_SIZE + mapX] - 1;
-        int texW = state.tex_width[texId];
-        int texH = state.tex_height[texId];
-
-        int texX = (int)(wallHit * texW);
-        if ((side == 0 && rayDirX > 0) || (side == 1 && rayDirY < 0))
-            texX = texW - texX - 1;
-
-        float step = (float)texH / lineHeight;
-        float texPos = (drawStart - SCREEN_HEIGHT / 2.0f + lineHeight / 2.0f - state.pitch) * step;
-
-        for (int y = drawStart; y <= drawEnd; ++y) {
-            int texY = (int)texPos;
-            texPos += step;
-
-            texY = (texY < 0) ? 0 : ((texY >= texH) ? texH - 1 : texY);
-
-            RGBA color = get_texture_pixel(texId, texX, texY);
-            color = apply_tonemap(color);
-            color = apply_fog(color, perpWallDist);
-            color = apply_dynamic_lights(color, state.pos.x + rayDirX * perpWallDist, state.pos.y + rayDirY * perpWallDist);
-            if (side == 1) {
-                color.r >>= 1;
-                color.g >>= 1;
-                color.b >>= 1;
+            const Cell& cell = MAPDATA[mapY * MAP_SIZE + mapX];
+            if (cell.type && cell.type != 2 && cell.type != 3)
+            {
+                float dist = (side == 0) ? (sideDistX - deltaDistX) : (sideDistY - deltaDistY);
+                if (dist > 0.01f)
+                    columnHits.push_back({ dist, mapX, mapY, side, rayDirX, rayDirY });
             }
 
-            state.pixels[y * SCREEN_WIDTH + x] = (color.b << 16) | (color.g << 8) | color.r;
+            if (sideDistX > 64.0f && sideDistY > 64.0f)
+                break;
+        }
+
+        std::sort(columnHits.begin(), columnHits.end(),
+            [](const WallHit& a, const WallHit& b) { return a.dist > b.dist; });
+
+        for (const WallHit& h : columnHits) {
+            const Cell& wallCell = MAPDATA[h.mapY * MAP_SIZE + h.mapX];
+
+            float perpWallDist = h.dist;
+            if (perpWallDist <= 0.01f)
+                perpWallDist = 0.01f;
+
+            if (perpWallDist < zbuffer[x])
+                zbuffer[x] = perpWallDist;
+
+            int texId = wallCell.type - 1;
+            if (texId < 0)
+                continue;
+
+            int texW = state.tex_width[texId];
+            int texH = state.tex_height[texId];
+
+            float eyeZ = state.pos.z + 0.5f;
+            float ceilDist = wallCell.ceilZ - eyeZ;
+            float floorDist = -eyeZ;
+
+            int ceilScreen = (int)((SCREEN_HEIGHT / 2.0f) - (ceilDist / perpWallDist) * SCREEN_HEIGHT);
+            int floorScreen = (int)((SCREEN_HEIGHT / 2.0f) - (floorDist / perpWallDist) * SCREEN_HEIGHT);
+
+            int rawStart = ceilScreen + (int)state.pitch;
+            int rawEnd = floorScreen + (int)state.pitch - 1;
+
+            int drawStart = std::max(rawStart, 0);
+            int drawEnd = std::min(rawEnd, SCREEN_HEIGHT - 1);
+
+            if (drawStart > drawEnd)
+                continue;
+
+            float wallScreenHeight = (float)(rawEnd - rawStart);
+            if (wallScreenHeight <= 0.0f)
+                continue;
+
+            float wallHit = (h.side == 0)
+                ? state.pos.y + perpWallDist * h.rayDirY
+                : state.pos.x + perpWallDist * h.rayDirX;
+            wallHit -= floorf(wallHit);
+
+            int texX = (int)(wallHit * texW);
+            if ((h.side == 0 && h.rayDirX > 0.0f) || (h.side == 1 && h.rayDirY < 0.0f))
+                texX = texW - texX - 1;
+
+            texX = std::clamp(texX, 0, texW - 1);
+
+            for (int y = drawStart; y <= drawEnd; ++y) {
+                int idx = y * SCREEN_WIDTH + x;
+
+                if (perpWallDist > depthBuffer[idx])
+                    continue;
+
+                depthBuffer[idx] = perpWallDist;
+
+                float wallWorldHeight = std::max(0.001f, wallCell.ceilZ);
+
+                float t = (y - rawStart) / wallScreenHeight;
+
+                float texCoord = t * wallWorldHeight;
+
+                int texY = (int)(fmodf(texCoord, 1.0f) * texH);
+
+                if (texY < 0)
+                    texY += texH;
+
+                RGBA color = get_texture_pixel(texId, texX, texY);
+                color = apply_tonemap(color);
+                color = apply_fog(color, perpWallDist);
+                color = apply_dynamic_lights(color,
+                    state.pos.x + h.rayDirX * perpWallDist,
+                    state.pos.y + h.rayDirY * perpWallDist);
+
+                if (h.side == 1) {
+                    color.r >>= 1;
+                    color.g >>= 1;
+                    color.b >>= 1;
+                }
+
+                state.pixels[idx] = (color.b << 16) | (color.g << 8) | color.r;
+            }
         }
     }
-    render_entities(zbuffer.data());
+
+    render_entities(depthBuffer);
 }
 
 static void render_weapon()
@@ -633,59 +666,77 @@ static void render_bullet_trail()
         return;
 
     float invDet = 1.0f / (state.plane.x * state.dir.y - state.dir.x * state.plane.y);
+    const float eyeZ = state.pos.z + 0.5f;
 
     for (size_t i = 1; i < bulletTrail.size(); i++) {
-        auto& pos1 = bulletTrail[i - 1];
-        auto& pos2 = bulletTrail[i];
+        const auto& p1 = bulletTrail[i - 1];
+        const auto& p2 = bulletTrail[i];
 
-        float spriteX1 = pos1.x - state.pos.x;
-        float spriteY1 = pos1.y - state.pos.y;
+        auto project = [&](const v3& p, float& screenX, float& screenY, float& depth)
+            {
+                float spriteX = p.x - state.pos.x;
+                float spriteY = p.y - state.pos.y;
 
-        float spriteX2 = pos2.x - state.pos.x;
-        float spriteY2 = pos2.y - state.pos.y;
+                float transformX = invDet * (state.dir.y * spriteX - state.dir.x * spriteY);
+                float transformY = invDet * (-state.plane.y * spriteX + state.plane.x * spriteY);
 
-        float transformX1 = invDet * (state.dir.y * spriteX1 - state.dir.x * spriteY1);
-        float transformY1 = invDet * (-state.plane.y * spriteX1 + state.plane.x * spriteY1);
+                if (transformY <= 0.01f) {
+                    screenX = screenY = depth = -1;
+                    return;
+                }
 
-        float transformX2 = invDet * (state.dir.y * spriteX2 - state.dir.x * spriteY2);
-        float transformY2 = invDet * (-state.plane.y * spriteX2 + state.plane.x * spriteY2);
+                screenX = (SCREEN_WIDTH / 2.0f) * (1.0f + transformX / transformY);
 
-        if (transformY1 <= 0 || transformY2 <= 0)
+                screenY = (SCREEN_HEIGHT / 2.0f)
+                    - ((p.z - eyeZ) / transformY) * SCREEN_HEIGHT
+                    + state.pitch;
+
+                depth = transformY;
+            };
+
+        float x1, y1, d1, x2, y2, d2;
+        project(p1, x1, y1, d1);
+        project(p2, x2, y2, d2);
+
+        if (d1 < 0 || d2 < 0)
             continue;
-
-        int screenX1 = (int)(((float)SCREEN_WIDTH / 2) * (1 + transformX1 / transformY1));
-        int screenX2 = (int)(((float)SCREEN_WIDTH / 2) * (1 + transformX2 / transformY2));
-
-        int screenY1 = (int)((float)SCREEN_HEIGHT / 2 + state.pitch);
-        int screenY2 = (int)((float)SCREEN_HEIGHT / 2 + state.pitch);
 
         RGBA baseColor = { 0, 255, 0, 255 };
 
-        RGBA color1 = apply_fog(baseColor, transformY1);
-        RGBA color2 = apply_fog(baseColor, transformY2);
+        RGBA c1 = apply_fog(baseColor, d1);
+        RGBA c2 = apply_fog(baseColor, d2);
 
-        RGBA lineColor;
-        lineColor.r = (color1.r + color2.r) / 2;
-        lineColor.g = (color1.g + color2.g) / 2;
-        lineColor.b = (color1.b + color2.b) / 2;
-        lineColor.a = (color1.a + color2.a) / 2;
+        RGBA lineColor = {
+            (uint8_t)((c1.r + c2.r) * 0.5f),
+            (uint8_t)((c1.g + c2.g) * 0.5f),
+            (uint8_t)((c1.b + c2.b) * 0.5f),
+            255
+        };
 
-        draw_line(screenX1, screenY1, screenX2, screenY2, lineColor);
+        draw_line((int)x1, (int)y1, (int)x2, (int)y2, lineColor);
     }
 }
 
-void render(float deltaTime)
+void render_loop(float deltaTime)
 {
-    memset(state.pixels, 0, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint32_t));
+    // memset(state.pixels, 0, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint32_t));
+
+    std::fill(depthBuffer.begin(), depthBuffer.end(), FLT_MAX);
 
     update_dynamic_lights(deltaTime);
 
-    render_other();
-    render_walls();
+    render_other(depthBuffer);
+    render_walls(depthBuffer);
     render_bullet_trail();
     render_weapon();
 
     // apply_glitch();
     // apply_dither();
     onerender();
+}
+
+void render_init() {
+    std::fill(zbuffer.begin(), zbuffer.end(), FLT_MAX);
+    depthBuffer.resize(SCREEN_WIDTH * SCREEN_HEIGHT);
+    spriteBuffer.reserve(256);
 }

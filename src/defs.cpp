@@ -1,7 +1,7 @@
 #include "pch.h"
 
-int MAP_SIZE;
-uint8_t* MAPDATA = new uint8_t[MAP_SIZE * MAP_SIZE];
+int MAP_SIZE = 0;
+Cell* MAPDATA = nullptr;
 
 std::vector<v3> bulletTrail;
 std::vector<DLight> dynamicLights;
